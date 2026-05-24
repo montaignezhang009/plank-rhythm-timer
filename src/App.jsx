@@ -93,14 +93,21 @@ export default function App() {
       if (typeof window !== 'undefined' && window.speechSynthesis) {
         const allVoices = window.speechSynthesis.getVoices();
         
-        // 粤语女声检索
-        let hkVoice = allVoices.find(v => {
-          const l = v.lang.toLowerCase().replace('_', '-');
-          return l.includes('zh-hk') || l.includes('zh-yue');
-        });
-        if (!hkVoice) {
-          hkVoice = allVoices.find(v => v.lang.toLowerCase().includes('zh'));
-        }
+        // 中文语音检索：iOS 上 zh-CN/zh-TW 几乎必定可用且开箱即响，
+        // 而 zh-HK 粤语包常常未预装、选中也不出声，故把它放到最后。
+        const zhVoices = allVoices.filter(v => v.lang.toLowerCase().replace('_', '-').includes('zh'));
+        let hkVoice =
+          zhVoices.find(v => {
+            const l = v.lang.toLowerCase().replace('_', '-');
+            return l.includes('zh-cn') || l.includes('cmn');
+          }) ||
+          zhVoices.find(v => v.lang.toLowerCase().replace('_', '-').includes('zh-tw')) ||
+          zhVoices.find(v => {
+            const l = v.lang.toLowerCase().replace('_', '-');
+            return l.includes('zh-hk') || l.includes('zh-yue');
+          }) ||
+          zhVoices[0] ||
+          null;
 
         // 英语女声检索
         const femaleNames = ['samantha', 'victoria', 'hazel', 'zira', 'susan', 'karen', 'moira', 'tessa', 'female', 'google us english', 'microsoft zira'];
@@ -114,7 +121,7 @@ export default function App() {
         }
 
         filteredVoices = [
-          { voice: hkVoice || null, label: hkVoice ? "粤语女声" : "粤语女声 (缺省)", type: 'zh' },
+          { voice: hkVoice || null, label: hkVoice ? "中文女声" : "中文女声 (缺省)", type: 'zh' },
           { voice: enVoice || null, label: enVoice ? "英语女声" : "英语女声 (缺省)", type: 'en' }
         ];
 
@@ -152,10 +159,12 @@ export default function App() {
           utterance.voice = activeOption.voice;
           utterance.lang = activeOption.voice.lang;
         } else {
-          utterance.lang = activeOption.type === 'zh' ? 'zh-HK' : 'en-US';
+          utterance.lang = activeOption.type === 'zh' ? 'zh-CN' : 'en-US';
         }
-        
-        utterance.rate = activeOption.type === 'zh' ? 1.25 : 1.15;
+
+        utterance.volume = 1;
+        utterance.pitch = 1;
+        utterance.rate = activeOption.type === 'zh' ? 1.2 : 1.1;
         window.speechSynthesis.speak(utterance);
         diag.spoke++;
       }
