@@ -62,179 +62,180 @@ export default function App() {
     }
 
     // ============================================================
-    // --- 2. 音频引擎 (Web Audio API —— iOS Safari 上稳定可靠) ---
+    // --- 2. 音频引擎（移植自节拍器：内存合成 WAV + 原生 <audio> 播放）---
     // ============================================================
-    // 设计：核心提示音用 Web Audio 当场合成，零文件、必出声。
-    // 同时预留人声接口：若 /audio/ 目录存在对应 mp3，会一并播放人声。
-    let audioCtx = null;
-    const voiceBuffers = {};   // 缓存已加载的人声音频
-    let voiceTriedLoad = false;
+    // 原理：在内存里逐采样合成一段悦耳的"木鱼/电子敲击"短音，封装成 WAV，
+    // 用原生 Audio 播放。走媒体音量通道，iOS 上又响又不刺耳。
+    // 音色算法直接采用节拍器的 synthesizeTickToBuffer（正弦+快速衰减+tanh软饱和）。
 
-    // 需要的人声文件名（以后把这些 mp3 放进 public/audio/ 即可自动启用人声）
-    // 例：public/audio/1.mp3, 2.mp3 ... start.mp3, rest.mp3 ...
-    const voiceFiles = {
-      '1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
-      start: 'start', rest: 'rest', ready: 'ready',
-      complete: 'complete', go: 'go'
-    };
+    function writeString(view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    }
 
-    let masterGain = null;
-    function ensureAudioCtx() {
-      if (!audioCtx) {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (AC) {
-          audioCtx = new AC();
-          // 主增益 + 压缩器：把整体音量推到最大且不破音
-          masterGain = audioCtx.createGain();
-          masterGain.gain.value = 1.0;
-          const comp = audioCtx.createDynamicsCompressor();
-          comp.threshold.value = -24;
-          comp.ratio.value = 12;
-          comp.attack.value = 0.002;
-          comp.release.value = 0.15;
-          masterGain.connect(comp);
-          comp.connect(audioCtx.destination);
+    // 合成一个敲击音到声道数据。pitch 控制音高(用于区分报数/提示)，vol 控制响度。
+    function synthTone(channelData, sampleRate, startIndex, opts) {
+      const { type = 'wood', pitch = 1.0, vol = 1.0, dur = 0.08 } = opts;
+      const numSamples = Math.floor(dur * sampleRate);
+
+      for (let i = 0; i < numSamples; i++) {
+        const t = i / sampleRate;
+        let sample = 0;
+
+        if (type === 'wood') {
+          // 木鱼：高频正弦 + 极快衰减，清脆温润
+          const amp = Math.exp(-t / 0.012) * 0.9 * vol;
+          const freq = 1500 * pitch;
+          sample = Math.tanh(Math.sin(2 * Math.PI * freq * t) * amp);
+        } else {
+          // 电子：指数扫频 + 1.58倍非谐和泛音 + tanh软饱和，模拟木质空腔共鸣
+          const amp = Math.exp(-t / 0.018) * 0.95 * vol;
+          const fStart = 780 * pitch;
+          const fEnd = 170 * pitch;
+          const tau_f = 0.014;
+          const phase = 2 * Math.PI * (fEnd * t - (fStart - fEnd) * tau_f * (Math.exp(-t / tau_f) - 1));
+          const fundamental = Math.sin(phase);
+          const resonance = Math.sin(phase * 1.58);
+          sample = Math.tanh((fundamental + 0.18 * resonance) * amp);
         }
+        // 叠加（允许一个 WAV 里前后排多个敲击）
+        channelData[startIndex + i] = Math.tanh((channelData[startIndex + i] || 0) + sample);
       }
-      // iOS 关键：在用户手势里 resume，激活后整段训练都能出声
-      if (audioCtx && audioCtx.state === 'suspended') {
-        audioCtx.resume();
-      }
-      return audioCtx;
     }
 
-    // 尝试异步加载人声 mp3（没有文件就静默跳过，完全不影响音效）
-    function tryLoadVoices() {
-      if (voiceTriedLoad || !audioCtx) return;
-      voiceTriedLoad = true;
-      Object.keys(voiceFiles).forEach(key => {
-        const url = `audio/${voiceFiles[key]}.mp3`;
-        fetch(url)
-          .then(res => { if (!res.ok) throw new Error('no file'); return res.arrayBuffer(); })
-          .then(buf => audioCtx.decodeAudioData(buf))
-          .then(decoded => { voiceBuffers[key] = decoded; })
-          .catch(() => { /* 该词没有人声文件，忽略，用音效即可 */ });
+    // 把一组敲击合成为一个 WAV Blob 的 URL。hits = [{type,pitch,vol,dur,at}]
+    function buildWavUrl(hits) {
+      const sampleRate = 22050;
+      let totalDur = 0;
+      hits.forEach(h => { totalDur = Math.max(totalDur, (h.at || 0) + (h.dur || 0.08)); });
+      totalDur += 0.05;
+      const totalSamples = Math.floor(totalDur * sampleRate);
+
+      const buffer = new ArrayBuffer(44 + totalSamples * 2);
+      const view = new DataView(buffer);
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + totalSamples * 2, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, totalSamples * 2, true);
+
+      const channelData = new Float32Array(totalSamples);
+      hits.forEach(h => {
+        const startIndex = Math.floor((h.at || 0) * sampleRate);
+        synthTone(channelData, sampleRate, startIndex, h);
       });
-    }
 
-    // 播放一个合成提示音（type 决定音色/音高）—— 大音量版
-    function playTone(type) {
-      const ac = ensureAudioCtx();
-      if (!ac || !masterGain) return;
-
-      const now = ac.currentTime;
-
-      // 参数：freq 基频, dur 时长, vol 峰值(接近1), wave 波形, ramp 滑音目标
-      let freq = 880, dur = 0.12, vol = 0.9, wave = 'triangle', ramp = null;
-
-      if (type === 'tick') {
-        freq = 700; dur = 0.07; vol = 0.7; wave = 'triangle';
-      } else if (type === 'count') {
-        freq = 900; dur = 0.13; vol = 1.0; wave = 'square';
-      } else if (type === 'start') {
-        freq = 540; dur = 0.22; vol = 1.0; wave = 'square'; ramp = 820;
-      } else if (type === 'rest') {
-        freq = 440; dur = 0.22; vol = 1.0; wave = 'square'; ramp = 300;
-      } else if (type === 'ready') {
-        freq = 760; dur = 0.16; vol = 0.95; wave = 'square';
-      } else if (type === 'complete') {
-        freq = 1046; dur = 0.55; vol = 1.0; wave = 'square'; ramp = 1568;
-      } else if (type === 'pause') {
-        freq = 320; dur = 0.16; vol = 0.8; wave = 'triangle';
-      } else if (type === 'resume') {
-        freq = 620; dur = 0.16; vol = 0.8; wave = 'triangle';
+      let offset = 44;
+      for (let i = 0; i < totalSamples; i++) {
+        const s = channelData[i];
+        const pcm = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        view.setInt16(offset, pcm, true);
+        offset += 2;
       }
-
-      // 双振荡器叠加：基频 + 高八度，声音更饱满穿透
-      const g = ac.createGain();
-      g.connect(masterGain);
-
-      const osc1 = ac.createOscillator();
-      osc1.type = wave;
-      osc1.frequency.setValueAtTime(freq, now);
-      if (ramp) osc1.frequency.exponentialRampToValueAtTime(ramp, now + dur);
-
-      const osc2 = ac.createOscillator();
-      osc2.type = 'sine';
-      osc2.frequency.setValueAtTime(freq * 2, now);
-      if (ramp) osc2.frequency.exponentialRampToValueAtTime(ramp * 2, now + dur);
-
-      osc1.connect(g);
-      osc2.connect(g);
-
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(vol, now + 0.008);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-
-      osc1.start(now); osc2.start(now);
-      osc1.stop(now + dur + 0.03);
-      osc2.stop(now + dur + 0.03);
+      return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
     }
 
-    // 播放人声（若已加载到对应 buffer）
-    function playVoice(key) {
-      const ac = ensureAudioCtx();
-      if (!ac || !voiceBuffers[key]) return false;
-      const src = ac.createBufferSource();
-      src.buffer = voiceBuffers[key];
-      src.connect(masterGain || ac.destination);
-      src.start(0);
-      return true;
+    // 预生成每种提示音的 WAV（启动时合成一次，之后秒播）
+    const soundUrls = {};
+    function buildAllSounds() {
+      if (soundUrls.ready) return; // 已生成
+      // 倒数报数：清脆木鱼，音高随数字略变化更有节奏层次
+      soundUrls['count'] = buildWavUrl([{ type: 'wood', pitch: 1.0, vol: 1.0, dur: 0.07 }]);
+      soundUrls['tick']  = buildWavUrl([{ type: 'wood', pitch: 0.8, vol: 0.6, dur: 0.05 }]);
+      // 开始：上扬双击（电子音）
+      soundUrls['start'] = buildWavUrl([
+        { type: 'electronic', pitch: 0.9, vol: 1.0, dur: 0.09, at: 0 },
+        { type: 'electronic', pitch: 1.3, vol: 1.0, dur: 0.10, at: 0.11 }
+      ]);
+      // 休息：下行双击
+      soundUrls['rest'] = buildWavUrl([
+        { type: 'electronic', pitch: 1.2, vol: 1.0, dur: 0.09, at: 0 },
+        { type: 'electronic', pitch: 0.8, vol: 1.0, dur: 0.11, at: 0.11 }
+      ]);
+      // 准备：单声清亮木鱼
+      soundUrls['ready'] = buildWavUrl([{ type: 'wood', pitch: 1.2, vol: 1.0, dur: 0.08 }]);
+      // 完成：三连上扬庆祝音
+      soundUrls['complete'] = buildWavUrl([
+        { type: 'electronic', pitch: 1.0, vol: 1.0, dur: 0.10, at: 0 },
+        { type: 'electronic', pitch: 1.3, vol: 1.0, dur: 0.10, at: 0.13 },
+        { type: 'electronic', pitch: 1.7, vol: 1.0, dur: 0.20, at: 0.26 }
+      ]);
+      soundUrls['pause'] = buildWavUrl([{ type: 'electronic', pitch: 0.7, vol: 0.8, dur: 0.10 }]);
+      soundUrls['resume'] = buildWavUrl([{ type: 'electronic', pitch: 1.1, vol: 0.8, dur: 0.10 }]);
+    }
+
+    // 复用一个原生 Audio 对象池播放（iOS 上原生 audio 走媒体音量、稳定且响）
+    const audioPool = [];
+    let poolIndex = 0;
+    function getAudio() {
+      if (audioPool.length < 4) {
+        const a = new Audio();
+        audioPool.push(a);
+        return a;
+      }
+      poolIndex = (poolIndex + 1) % 4;
+      return audioPool[poolIndex];
+    }
+
+    function playSound(name) {
+      const url = soundUrls[name];
+      if (!url) return;
+      const a = getAudio();
+      a.src = url;
+      a.currentTime = 0;
+      a.volume = 1.0;
+      const p = a.play();
+      if (p && p.catch) p.catch(() => {});
+    }
+
+    // 音频解锁：首次用户手势里合成所有音 + 播一个静音激活媒体通道
+    let audioReady = false;
+    function unlockAudio() {
+      if (audioReady) return;
+      buildAllSounds();
+      // 播放一次极短静音，激活 iOS 媒体音频通道
+      const a = getAudio();
+      a.src = soundUrls['tick'];
+      a.volume = 0.01;
+      const p = a.play();
+      if (p && p.catch) p.catch(() => {});
+      audioReady = true;
     }
 
     // ============================================================
     // --- 3. 统一发声入口 cue() ---
-    // 同时尝试人声 + 必定播放音效，构成双保险
     // ============================================================
     function cue(key) {
       if (!soundEnabled) return;
-      ensureAudioCtx();
+      if (!audioReady) buildAllSounds();
 
-      // 数字 1-5：人声优先，音效兜底
       if (['1', '2', '3', '4', '5'].includes(key)) {
-        playVoice(key);
-        playTone('count');
+        playSound('count');
         return;
       }
-
-      // 语义化提示
       switch (key) {
-        case 'start':
-          playVoice('start'); playTone('start'); break;
-        case 'rest':
-          playVoice('rest'); playTone('rest'); break;
-        case 'ready':
-          playVoice('ready'); playTone('ready'); break;
-        case 'complete':
-          playVoice('complete'); playTone('complete'); break;
-        case 'pause':
-          playTone('pause'); break;
-        case 'resume':
-          playTone('resume'); break;
-        case 'tick':
-          playTone('tick'); break;
+        case 'start': playSound('start'); break;
+        case 'rest': playSound('rest'); break;
+        case 'ready': playSound('ready'); break;
+        case 'complete': playSound('complete'); break;
+        case 'pause': playSound('pause'); break;
+        case 'resume': playSound('resume'); break;
+        case 'tick': playSound('tick'); break;
         case 'test':
-          // 测试：依次给一个完整反馈
-          playVoice('ready'); playTone('ready');
-          setTimeout(() => { playVoice('start'); playTone('start'); }, 350);
+          playSound('ready');
+          setTimeout(() => playSound('start'), 300);
+          setTimeout(() => playSound('complete'), 650);
           break;
-        default:
-          playTone('count');
-      }
-    }
-
-    // 音频解锁：在首次用户手势里激活 AudioContext 并尝试加载人声
-    function unlockAudio() {
-      const ac = ensureAudioCtx();
-      if (ac) {
-        // 播放一个几乎无声的极短音来彻底激活通道
-        const now = ac.currentTime;
-        const osc = ac.createOscillator();
-        const g = ac.createGain();
-        g.gain.setValueAtTime(0.0001, now);
-        osc.connect(g); g.connect(ac.destination);
-        osc.start(now); osc.stop(now + 0.01);
-        tryLoadVoices();
+        default: playSound('count');
       }
     }
 
