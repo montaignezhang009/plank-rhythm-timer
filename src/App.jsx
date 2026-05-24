@@ -78,10 +78,23 @@ export default function App() {
       complete: 'complete', go: 'go'
     };
 
+    let masterGain = null;
     function ensureAudioCtx() {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
-        if (AC) audioCtx = new AC();
+        if (AC) {
+          audioCtx = new AC();
+          // 主增益 + 压缩器：把整体音量推到最大且不破音
+          masterGain = audioCtx.createGain();
+          masterGain.gain.value = 1.0;
+          const comp = audioCtx.createDynamicsCompressor();
+          comp.threshold.value = -24;
+          comp.ratio.value = 12;
+          comp.attack.value = 0.002;
+          comp.release.value = 0.15;
+          masterGain.connect(comp);
+          comp.connect(audioCtx.destination);
+        }
       }
       // iOS 关键：在用户手势里 resume，激活后整段训练都能出声
       if (audioCtx && audioCtx.state === 'suspended') {
@@ -104,51 +117,58 @@ export default function App() {
       });
     }
 
-    // 播放一个合成提示音（type 决定音色/音高）
+    // 播放一个合成提示音（type 决定音色/音高）—— 大音量版
     function playTone(type) {
       const ac = ensureAudioCtx();
-      if (!ac) return;
+      if (!ac || !masterGain) return;
 
       const now = ac.currentTime;
-      const osc = ac.createOscillator();
-      const gain = ac.createGain();
-      osc.connect(gain);
-      gain.connect(ac.destination);
 
-      let freq = 880, dur = 0.12, wave = 'sine', vol = 0.5;
+      // 参数：freq 基频, dur 时长, vol 峰值(接近1), wave 波形, ramp 滑音目标
+      let freq = 880, dur = 0.12, vol = 0.9, wave = 'triangle', ramp = null;
 
-      if (type === 'tick') {            // 普通倒数滴答
-        freq = 660; dur = 0.08; vol = 0.35;
-      } else if (type === 'count') {    // 关键秒数（1-5）报数滴
-        freq = 880; dur = 0.1; vol = 0.5;
-      } else if (type === 'start') {    // 开始：上升双音
-        freq = 523; dur = 0.18; vol = 0.6;
-      } else if (type === 'rest') {     // 休息：下降双音
-        freq = 392; dur = 0.18; vol = 0.6;
-      } else if (type === 'ready') {    // 准备提示
-        freq = 740; dur = 0.14; vol = 0.55;
-      } else if (type === 'complete') { // 完成：明亮长音
-        freq = 1046; dur = 0.5; vol = 0.7;
+      if (type === 'tick') {
+        freq = 700; dur = 0.07; vol = 0.7; wave = 'triangle';
+      } else if (type === 'count') {
+        freq = 900; dur = 0.13; vol = 1.0; wave = 'square';
+      } else if (type === 'start') {
+        freq = 540; dur = 0.22; vol = 1.0; wave = 'square'; ramp = 820;
+      } else if (type === 'rest') {
+        freq = 440; dur = 0.22; vol = 1.0; wave = 'square'; ramp = 300;
+      } else if (type === 'ready') {
+        freq = 760; dur = 0.16; vol = 0.95; wave = 'square';
+      } else if (type === 'complete') {
+        freq = 1046; dur = 0.55; vol = 1.0; wave = 'square'; ramp = 1568;
       } else if (type === 'pause') {
-        freq = 300; dur = 0.15; vol = 0.4;
+        freq = 320; dur = 0.16; vol = 0.8; wave = 'triangle';
       } else if (type === 'resume') {
-        freq = 600; dur = 0.15; vol = 0.4;
+        freq = 620; dur = 0.16; vol = 0.8; wave = 'triangle';
       }
 
-      osc.type = wave;
-      osc.frequency.setValueAtTime(freq, now);
+      // 双振荡器叠加：基频 + 高八度，声音更饱满穿透
+      const g = ac.createGain();
+      g.connect(masterGain);
 
-      // start/rest 做一个滑音，更悦耳易辨
-      if (type === 'start') osc.frequency.exponentialRampToValueAtTime(784, now + dur);
-      if (type === 'rest') osc.frequency.exponentialRampToValueAtTime(294, now + dur);
-      if (type === 'complete') osc.frequency.exponentialRampToValueAtTime(1568, now + dur);
+      const osc1 = ac.createOscillator();
+      osc1.type = wave;
+      osc1.frequency.setValueAtTime(freq, now);
+      if (ramp) osc1.frequency.exponentialRampToValueAtTime(ramp, now + dur);
 
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(vol, now + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+      const osc2 = ac.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(freq * 2, now);
+      if (ramp) osc2.frequency.exponentialRampToValueAtTime(ramp * 2, now + dur);
 
-      osc.start(now);
-      osc.stop(now + dur + 0.02);
+      osc1.connect(g);
+      osc2.connect(g);
+
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(vol, now + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      osc1.start(now); osc2.start(now);
+      osc1.stop(now + dur + 0.03);
+      osc2.stop(now + dur + 0.03);
     }
 
     // 播放人声（若已加载到对应 buffer）
@@ -157,7 +177,7 @@ export default function App() {
       if (!ac || !voiceBuffers[key]) return false;
       const src = ac.createBufferSource();
       src.buffer = voiceBuffers[key];
-      src.connect(ac.destination);
+      src.connect(masterGain || ac.destination);
       src.start(0);
       return true;
     }
