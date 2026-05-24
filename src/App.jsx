@@ -150,6 +150,28 @@ export default function App() {
       }
     }
 
+    // iOS Safari 音频解锁：必须在真实用户手势中、念真实内容才能生效
+    function unlockAudio() {
+      if (audioUnlocked) return;
+      if (typeof window === 'undefined' || !window.speechSynthesis) return;
+
+      // 若语音列表还没加载完，先补一次
+      if (filteredVoices.length === 0) initVoices();
+
+      // iOS 不认空字符串，用一个几乎听不见的真实短词来解锁通道
+      const warm = new SpeechSynthesisUtterance('.');
+      warm.volume = 0.01;
+      warm.rate = 2;
+      const activeOption = filteredVoices[selectedVoiceIndex];
+      if (activeOption && activeOption.voice) {
+        warm.voice = activeOption.voice;
+        warm.lang = activeOption.voice.lang;
+      }
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(warm);
+      audioUnlocked = true;
+    }
+
     // --- 3. Wake Lock 唤醒锁 ---
     async function requestWakeLock() {
       if ('wakeLock' in navigator) {
@@ -177,11 +199,7 @@ export default function App() {
     // --- 5. 绝对物理时钟计时器 ---
     let tickTimeoutId = null;
     function startTraining() {
-      if (!audioUnlocked) {
-        const dummy = new SpeechSynthesisUtterance('');
-        window.speechSynthesis.speak(dummy);
-        audioUnlocked = true;
-      }
+      unlockAudio();
       requestWakeLock();
 
       state.status = 'training';
@@ -523,6 +541,7 @@ export default function App() {
     };
 
     function handleDown(e) {
+      unlockAudio();
       const pos = getCoords(e);
       hitboxes.forEach(box => {
         if (pos.x >= box.x && pos.x <= box.x + box.w && pos.y >= box.y && pos.y <= box.y + box.h) {
