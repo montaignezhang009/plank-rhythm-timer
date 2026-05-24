@@ -197,6 +197,57 @@ export default function App() {
       if (p && p.catch) p.catch(() => {});
     }
 
+    // ============================================================
+    // --- 2b. 人声 MP3 引擎 ---
+    // ============================================================
+    // MP3 文件放在 public/voices/ 目录下，命名规则：
+    //   voice_start.mp3    → 训练开始（「始めます」）
+    //   voice_rest.mp3     → 休息开始（「休憩」）
+    //   voice_complete.mp3 → 全部完成（「終わります」）
+    //   voice_1.mp3        → 倒数「1」
+    //   voice_2.mp3        → 倒数「2」
+    //   voice_3.mp3        → 倒数「3」
+    //   voice_4.mp3        → 倒数「4」
+    //   voice_5.mp3        → 倒数「5」
+
+    // 人声 Audio 对象池（独立于合成音池，避免互相抢占）
+    const voicePool = [];
+    let voicePoolIndex = 0;
+    function getVoiceAudio() {
+      if (voicePool.length < 4) {
+        const a = new Audio();
+        voicePool.push(a);
+        return a;
+      }
+      voicePoolIndex = (voicePoolIndex + 1) % 4;
+      return voicePool[voicePoolIndex];
+    }
+
+    // 人声文件映射表
+    const VOICE_BASE = '/voices/';
+    const voiceFiles = {
+      'start':    'voice_start.mp3',
+      'rest':     'voice_rest.mp3',
+      'complete': 'voice_complete.mp3',
+      '1': 'voice_1.mp3',
+      '2': 'voice_2.mp3',
+      '3': 'voice_3.mp3',
+      '4': 'voice_4.mp3',
+      '5': 'voice_5.mp3',
+    };
+
+    // 播放人声 MP3（文件不存在时静默失败，不影响合成音）
+    function playVoice(key) {
+      const filename = voiceFiles[key];
+      if (!filename) return;
+      const a = getVoiceAudio();
+      a.src = VOICE_BASE + filename;
+      a.currentTime = 0;
+      a.volume = 1.0;
+      const p = a.play();
+      if (p && p.catch) p.catch(() => {});
+    }
+
     // 音频解锁：首次用户手势里合成所有音 + 播一个静音激活媒体通道
     let audioReady = false;
     function unlockAudio() {
@@ -208,34 +259,65 @@ export default function App() {
       a.volume = 0.01;
       const p = a.play();
       if (p && p.catch) p.catch(() => {});
+      // 同步激活人声音频通道（静音预热）
+      const v = getVoiceAudio();
+      v.volume = 0.01;
+      v.src = VOICE_BASE + 'voice_1.mp3';
+      const vp = v.play();
+      if (vp && vp.catch) vp.catch(() => {});
       audioReady = true;
     }
 
     // ============================================================
     // --- 3. 统一发声入口 cue() ---
+    // 策略：合成音（木鱼/电子）与人声 MP3 同时播放，互不干扰，产生层次感。
+    // 有人声 MP3 的 key：start / rest / complete / 1~5
+    // 仅合成音的 key：ready / pause / resume / tick / test
     // ============================================================
     function cue(key) {
       if (!soundEnabled) return;
       if (!audioReady) buildAllSounds();
 
+      // 倒数报数：合成木鱼音 + 人声同时播
       if (['1', '2', '3', '4', '5'].includes(key)) {
-        playSound('count');
+        playSound('count');   // 合成木鱼音（即时响）
+        playVoice(key);       // 人声 MP3（日文数字）
         return;
       }
+
       switch (key) {
-        case 'start': playSound('start'); break;
-        case 'rest': playSound('rest'); break;
-        case 'ready': playSound('ready'); break;
-        case 'complete': playSound('complete'); break;
-        case 'pause': playSound('pause'); break;
-        case 'resume': playSound('resume'); break;
-        case 'tick': playSound('tick'); break;
-        case 'test':
-          playSound('ready');
-          setTimeout(() => playSound('start'), 300);
-          setTimeout(() => playSound('complete'), 650);
+        case 'start':
+          playSound('start');     // 合成上扬双击
+          playVoice('start');     // 人声「始めます」
           break;
-        default: playSound('count');
+        case 'rest':
+          playSound('rest');      // 合成下行双击
+          playVoice('rest');      // 人声「休憩」
+          break;
+        case 'complete':
+          playSound('complete');  // 合成三连庆祝
+          playVoice('complete');  // 人声「終わります」
+          break;
+        case 'ready':
+          playSound('ready');     // 合成准备音（无对应人声）
+          break;
+        case 'pause':
+          playSound('pause');
+          break;
+        case 'resume':
+          playSound('resume');
+          break;
+        case 'tick':
+          playSound('tick');
+          break;
+        case 'test':
+          // 测试序列：ready → start（含人声）→ complete（含人声）
+          playSound('ready');
+          setTimeout(() => { playSound('start'); playVoice('start'); }, 400);
+          setTimeout(() => { playSound('complete'); playVoice('complete'); }, 900);
+          break;
+        default:
+          playSound('count');
       }
     }
 
