@@ -17,8 +17,8 @@ export default function App() {
     };
 
     let state = {
-      status: 'config', 
-      subStatus: 'prepare', 
+      status: 'config',
+      subStatus: 'prepare',
       currentRound: 1,
       timeLeft: 5,
       isPaused: false
@@ -27,9 +27,9 @@ export default function App() {
     // UI 颜色过渡平滑阻尼器
     let backgroundColors = {
       config: { r: 9, g: 13, b: 22 },
-      prepare: { r: 217, g: 119, b: 6 }, 
-      work: { r: 5, g: 150, b: 105 },    
-      rest: { r: 37, g: 99, b: 235 }     
+      prepare: { r: 217, g: 119, b: 6 },
+      work: { r: 5, g: 150, b: 105 },
+      rest: { r: 37, g: 99, b: 235 }
     };
     let currentBg = { r: 9, g: 13, b: 22 };
 
@@ -44,34 +44,9 @@ export default function App() {
     let targetRing = 1.0;
     let clickFeedback = {};
 
-    // 语音播报及双通道词典
-    let filteredVoices = [];
-    let selectedVoiceIndex = 0;
-    let audioUnlocked = false;
+    // 声音相关状态
+    let soundEnabled = localStorage.getItem('plank_sound') !== 'off';
     let wakeLock = null;
-
-    const speechPhrases = {
-      zh: {
-        prepareIntro: "准备，五，四，三，二，一",
-        start: "开始",
-        rest: "休息",
-        ready: "准备",
-        resume: "继续",
-        pause: "暂停",
-        complete: "训练完成，干得漂亮！",
-        test: "平板支撑计时，系统就绪！"
-      },
-      en: {
-        prepareIntro: "Get ready, five, four, three, two, one",
-        start: "Start",
-        rest: "Rest",
-        ready: "Ready",
-        resume: "Resume",
-        pause: "Pause",
-        complete: "Workout complete, fantastic job!",
-        test: "Plank rhythm timer, system ready!"
-      }
-    };
 
     // 背景浮动粒子
     let particles = [];
@@ -86,102 +61,164 @@ export default function App() {
       });
     }
 
-    // --- 2. 语音选择及多语种适配 ---
-    function initVoices() {
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        const allVoices = window.speechSynthesis.getVoices();
-        
-        // 中文语音检索：iOS 上 zh-CN/zh-TW 几乎必定可用且开箱即响，
-        // 而 zh-HK 粤语包常常未预装、选中也不出声，故把它放到最后。
-        const zhVoices = allVoices.filter(v => v.lang.toLowerCase().replace('_', '-').includes('zh'));
-        let hkVoice =
-          zhVoices.find(v => {
-            const l = v.lang.toLowerCase().replace('_', '-');
-            return l.includes('zh-cn') || l.includes('cmn');
-          }) ||
-          zhVoices.find(v => v.lang.toLowerCase().replace('_', '-').includes('zh-tw')) ||
-          zhVoices.find(v => {
-            const l = v.lang.toLowerCase().replace('_', '-');
-            return l.includes('zh-hk') || l.includes('zh-yue');
-          }) ||
-          zhVoices[0] ||
-          null;
+    // ============================================================
+    // --- 2. 音频引擎 (Web Audio API —— iOS Safari 上稳定可靠) ---
+    // ============================================================
+    // 设计：核心提示音用 Web Audio 当场合成，零文件、必出声。
+    // 同时预留人声接口：若 /audio/ 目录存在对应 mp3，会一并播放人声。
+    let audioCtx = null;
+    const voiceBuffers = {};   // 缓存已加载的人声音频
+    let voiceTriedLoad = false;
 
-        // 英语女声检索
-        const femaleNames = ['samantha', 'victoria', 'hazel', 'zira', 'susan', 'karen', 'moira', 'tessa', 'female', 'google us english', 'microsoft zira'];
-        let enVoice = allVoices.find(v => {
-          const lang = v.lang.toLowerCase();
-          const name = v.name.toLowerCase();
-          return lang.startsWith('en') && femaleNames.some(fn => name.includes(fn));
-        });
-        if (!enVoice) {
-          enVoice = allVoices.find(v => v.lang.toLowerCase().startsWith('en'));
-        }
+    // 需要的人声文件名（以后把这些 mp3 放进 public/audio/ 即可自动启用人声）
+    // 例：public/audio/1.mp3, 2.mp3 ... start.mp3, rest.mp3 ...
+    const voiceFiles = {
+      '1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
+      start: 'start', rest: 'rest', ready: 'ready',
+      complete: 'complete', go: 'go'
+    };
 
-        filteredVoices = [
-          { voice: hkVoice || null, label: hkVoice ? "中文女声" : "中文女声 (缺省)", type: 'zh' },
-          { voice: enVoice || null, label: enVoice ? "英语女声" : "英语女声 (缺省)", type: 'en' }
-        ];
+    function ensureAudioCtx() {
+      if (!audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) audioCtx = new AC();
+      }
+      // iOS 关键：在用户手势里 resume，激活后整段训练都能出声
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      return audioCtx;
+    }
+
+    // 尝试异步加载人声 mp3（没有文件就静默跳过，完全不影响音效）
+    function tryLoadVoices() {
+      if (voiceTriedLoad || !audioCtx) return;
+      voiceTriedLoad = true;
+      Object.keys(voiceFiles).forEach(key => {
+        const url = `audio/${voiceFiles[key]}.mp3`;
+        fetch(url)
+          .then(res => { if (!res.ok) throw new Error('no file'); return res.arrayBuffer(); })
+          .then(buf => audioCtx.decodeAudioData(buf))
+          .then(decoded => { voiceBuffers[key] = decoded; })
+          .catch(() => { /* 该词没有人声文件，忽略，用音效即可 */ });
+      });
+    }
+
+    // 播放一个合成提示音（type 决定音色/音高）
+    function playTone(type) {
+      const ac = ensureAudioCtx();
+      if (!ac) return;
+
+      const now = ac.currentTime;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain);
+      gain.connect(ac.destination);
+
+      let freq = 880, dur = 0.12, wave = 'sine', vol = 0.5;
+
+      if (type === 'tick') {            // 普通倒数滴答
+        freq = 660; dur = 0.08; vol = 0.35;
+      } else if (type === 'count') {    // 关键秒数（1-5）报数滴
+        freq = 880; dur = 0.1; vol = 0.5;
+      } else if (type === 'start') {    // 开始：上升双音
+        freq = 523; dur = 0.18; vol = 0.6;
+      } else if (type === 'rest') {     // 休息：下降双音
+        freq = 392; dur = 0.18; vol = 0.6;
+      } else if (type === 'ready') {    // 准备提示
+        freq = 740; dur = 0.14; vol = 0.55;
+      } else if (type === 'complete') { // 完成：明亮长音
+        freq = 1046; dur = 0.5; vol = 0.7;
+      } else if (type === 'pause') {
+        freq = 300; dur = 0.15; vol = 0.4;
+      } else if (type === 'resume') {
+        freq = 600; dur = 0.15; vol = 0.4;
+      }
+
+      osc.type = wave;
+      osc.frequency.setValueAtTime(freq, now);
+
+      // start/rest 做一个滑音，更悦耳易辨
+      if (type === 'start') osc.frequency.exponentialRampToValueAtTime(784, now + dur);
+      if (type === 'rest') osc.frequency.exponentialRampToValueAtTime(294, now + dur);
+      if (type === 'complete') osc.frequency.exponentialRampToValueAtTime(1568, now + dur);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(vol, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      osc.start(now);
+      osc.stop(now + dur + 0.02);
+    }
+
+    // 播放人声（若已加载到对应 buffer）
+    function playVoice(key) {
+      const ac = ensureAudioCtx();
+      if (!ac || !voiceBuffers[key]) return false;
+      const src = ac.createBufferSource();
+      src.buffer = voiceBuffers[key];
+      src.connect(ac.destination);
+      src.start(0);
+      return true;
+    }
+
+    // ============================================================
+    // --- 3. 统一发声入口 cue() ---
+    // 同时尝试人声 + 必定播放音效，构成双保险
+    // ============================================================
+    function cue(key) {
+      if (!soundEnabled) return;
+      ensureAudioCtx();
+
+      // 数字 1-5：人声优先，音效兜底
+      if (['1', '2', '3', '4', '5'].includes(key)) {
+        playVoice(key);
+        playTone('count');
+        return;
+      }
+
+      // 语义化提示
+      switch (key) {
+        case 'start':
+          playVoice('start'); playTone('start'); break;
+        case 'rest':
+          playVoice('rest'); playTone('rest'); break;
+        case 'ready':
+          playVoice('ready'); playTone('ready'); break;
+        case 'complete':
+          playVoice('complete'); playTone('complete'); break;
+        case 'pause':
+          playTone('pause'); break;
+        case 'resume':
+          playTone('resume'); break;
+        case 'tick':
+          playTone('tick'); break;
+        case 'test':
+          // 测试：依次给一个完整反馈
+          playVoice('ready'); playTone('ready');
+          setTimeout(() => { playVoice('start'); playTone('start'); }, 350);
+          break;
+        default:
+          playTone('count');
       }
     }
-    
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      window.speechSynthesis.onvoiceschanged = initVoices;
-      initVoices();
-    }
 
-    function speak(phraseKey) {
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-        
-        const activeOption = filteredVoices[selectedVoiceIndex];
-        if (!activeOption) return;
-
-        let phrase = "";
-        if (speechPhrases[activeOption.type][phraseKey]) {
-          phrase = speechPhrases[activeOption.type][phraseKey];
-        } else {
-          phrase = phraseKey; 
-        }
-
-        const utterance = new SpeechSynthesisUtterance(phrase);
-        if (activeOption.voice) {
-          utterance.voice = activeOption.voice;
-          utterance.lang = activeOption.voice.lang;
-        } else {
-          utterance.lang = activeOption.type === 'zh' ? 'zh-CN' : 'en-US';
-        }
-
-        utterance.volume = 1;
-        utterance.pitch = 1;
-        utterance.rate = activeOption.type === 'zh' ? 1.2 : 1.1;
-        window.speechSynthesis.speak(utterance);
-      }
-    }
-
-    // iOS Safari 音频解锁：必须在真实用户手势中、念真实内容才能生效
+    // 音频解锁：在首次用户手势里激活 AudioContext 并尝试加载人声
     function unlockAudio() {
-      if (audioUnlocked) return;
-      if (typeof window === 'undefined' || !window.speechSynthesis) return;
-
-      // 若语音列表还没加载完，先补一次
-      if (filteredVoices.length === 0) initVoices();
-
-      // iOS 不认空字符串，用一个几乎听不见的真实短词来解锁通道
-      const warm = new SpeechSynthesisUtterance('.');
-      warm.volume = 0.01;
-      warm.rate = 2;
-      const activeOption = filteredVoices[selectedVoiceIndex];
-      if (activeOption && activeOption.voice) {
-        warm.voice = activeOption.voice;
-        warm.lang = activeOption.voice.lang;
+      const ac = ensureAudioCtx();
+      if (ac) {
+        // 播放一个几乎无声的极短音来彻底激活通道
+        const now = ac.currentTime;
+        const osc = ac.createOscillator();
+        const g = ac.createGain();
+        g.gain.setValueAtTime(0.0001, now);
+        osc.connect(g); g.connect(ac.destination);
+        osc.start(now); osc.stop(now + 0.01);
+        tryLoadVoices();
       }
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(warm);
-      audioUnlocked = true;
     }
 
-    // --- 3. Wake Lock 唤醒锁 ---
+    // --- 4. Wake Lock 唤醒锁 ---
     async function requestWakeLock() {
       if ('wakeLock' in navigator) {
         try {
@@ -194,18 +231,18 @@ export default function App() {
 
     function releaseWakeLock() {
       if (wakeLock) {
-        wakeLock.release().then(() => wakeLock = null);
+        wakeLock.release().then(() => wakeLock = null).catch(() => {});
       }
     }
 
-    // --- 4. 存储配置 ---
+    // --- 5. 存储配置 ---
     function saveConfig() {
       localStorage.setItem('plank_work_time', config.workTime);
       localStorage.setItem('plank_rest_time', config.restTime);
       localStorage.setItem('plank_total_rounds', config.totalRounds);
     }
 
-    // --- 5. 绝对物理时钟计时器 ---
+    // --- 6. 绝对物理时钟计时器 ---
     let tickTimeoutId = null;
     function startTraining() {
       unlockAudio();
@@ -221,7 +258,7 @@ export default function App() {
       targetEndTime = Date.now() + 5000;
       lastSpokenSec = -1;
 
-      speak("prepareIntro");
+      cue('ready');
       tick();
     }
 
@@ -229,18 +266,17 @@ export default function App() {
       if (state.isPaused) {
         targetEndTime = Date.now() + pausedRemainingTime;
         state.isPaused = false;
-        speak("resume");
+        cue('resume');
       } else {
         pausedRemainingTime = targetEndTime - Date.now();
         state.isPaused = true;
-        speak("pause");
+        cue('pause');
       }
     }
 
     function resetTraining() {
       state.status = 'config';
       releaseWakeLock();
-      window.speechSynthesis.cancel();
       if (tickTimeoutId) clearTimeout(tickTimeoutId);
       draw();
     }
@@ -252,10 +288,10 @@ export default function App() {
         phaseDuration = config.workTime;
         targetEndTime = Date.now() + (config.workTime * 1000);
         lastSpokenSec = -1;
-        speak("start");
+        cue('start');
       } else if (state.subStatus === 'work') {
         if (state.currentRound >= config.totalRounds) {
-          speak("complete");
+          cue('complete');
           resetTraining();
         } else {
           state.subStatus = 'rest';
@@ -263,7 +299,7 @@ export default function App() {
           phaseDuration = config.restTime;
           targetEndTime = Date.now() + (config.restTime * 1000);
           lastSpokenSec = -1;
-          speak("rest");
+          cue('rest');
         }
       } else if (state.subStatus === 'rest') {
         state.currentRound++;
@@ -272,25 +308,18 @@ export default function App() {
         phaseDuration = config.workTime;
         targetEndTime = Date.now() + (config.workTime * 1000);
         lastSpokenSec = -1;
-        speak("start");
+        cue('start');
       }
     }
 
     function triggerVoiceAnnouncements(sec) {
       if (state.subStatus === 'prepare') {
-        if (sec <= 4 && sec >= 1) {
-          speak(sec.toString());
-        }
+        if (sec <= 4 && sec >= 1) cue(sec.toString());
       } else if (state.subStatus === 'work') {
-        if (sec <= 5 && sec >= 1) {
-          speak(sec.toString());
-        }
+        if (sec <= 5 && sec >= 1) cue(sec.toString());
       } else if (state.subStatus === 'rest') {
-        if (sec === 5) {
-          speak("ready");
-        } else if (sec < 5 && sec >= 1) {
-          speak(sec.toString());
-        }
+        if (sec === 5) cue('ready');
+        else if (sec < 5 && sec >= 1) cue(sec.toString());
       }
     }
 
@@ -317,7 +346,7 @@ export default function App() {
       tickTimeoutId = setTimeout(tick, 50);
     }
 
-    // --- 6. Canvas 绘制渲染模块 ---
+    // --- 7. Canvas 绘制渲染模块 ---
     function resize() {
       const rect = canvas.parentNode.getBoundingClientRect();
       canvas.width = rect.width * scale;
@@ -440,31 +469,30 @@ export default function App() {
         ctx.textAlign = 'left';
         ctx.fillStyle = '#cbd5e1';
         ctx.font = 'bold 13px sans-serif';
-        ctx.fillText('🗣️ 提示语音选择', 40, voiceY + h * 0.048);
+        ctx.fillText('🔊 提示音', 40, voiceY + h * 0.048);
 
         ctx.textAlign = 'right';
-        ctx.fillStyle = '#f97316';
-        let activeVoiceName = filteredVoices[selectedVoiceIndex] ? filteredVoices[selectedVoiceIndex].label : '粤语女声';
+        ctx.fillStyle = soundEnabled ? '#34d399' : '#64748b';
         ctx.font = 'bold 13px sans-serif';
-        ctx.fillText(activeVoiceName + ' ⇆', w - 40, voiceY + h * 0.048);
-        hitboxes.push({ x: 24, y: voiceY, w: w - 48, h: h * 0.08, action: 'toggle_voice' });
+        ctx.fillText(soundEnabled ? '已开启 ⇆' : '已关闭 ⇆', w - 40, voiceY + h * 0.048);
+        hitboxes.push({ x: 24, y: voiceY, w: w - 48, h: h * 0.08, action: 'toggle_sound' });
 
         const footerY = h - 94;
         const testBtnW = 100;
-        
-        ctx.fillStyle = clickFeedback['test_sound'] ? '#1e293b' : '#0f172a';
+
+        ctx.fillStyle = clickFeedback['test_voice'] ? '#1e293b' : '#0f172a';
         drawRoundedRect(ctx, 24, footerY, testBtnW, 60, 16, true, true, '#334155', 1.5);
         ctx.textAlign = 'center';
         ctx.fillStyle = '#cbd5e1';
         ctx.font = 'bold 14px sans-serif';
-        ctx.fillText('测试语音', 24 + testBtnW/2, footerY + 34);
+        ctx.fillText('测试声音', 24 + testBtnW / 2, footerY + 34);
         hitboxes.push({ x: 24, y: footerY, w: testBtnW, h: 60, action: 'test_voice' });
 
         ctx.fillStyle = clickFeedback['start'] ? '#ea580c' : '#f97316';
         drawRoundedRect(ctx, 24 + testBtnW + 12, footerY, w - 48 - testBtnW - 12, 60, 16, true, false);
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 18px sans-serif';
-        ctx.fillText('进入训练', 24 + testBtnW + 12 + (w - 48 - testBtnW - 12)/2, footerY + 36);
+        ctx.fillText('进入训练', 24 + testBtnW + 12 + (w - 48 - testBtnW - 12) / 2, footerY + 36);
         hitboxes.push({ x: 24 + testBtnW + 12, y: footerY, w: w - 48 - testBtnW - 12, h: 60, action: 'start' });
 
       } else {
@@ -522,13 +550,13 @@ export default function App() {
         drawRoundedRect(ctx, 24, ctrlY, pauseW, 60, 16, true, true, 'rgba(255,255,255,0.4)', 1.5);
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 18px sans-serif';
-        ctx.fillText(state.isPaused ? '继续' : '暂停', 24 + pauseW/2, ctrlY + 36);
+        ctx.fillText(state.isPaused ? '继续' : '暂停', 24 + pauseW / 2, ctrlY + 36);
         hitboxes.push({ x: 24, y: ctrlY, w: pauseW, h: 60, action: 'pause' });
 
         ctx.fillStyle = clickFeedback['stop'] ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.15)';
         drawRoundedRect(ctx, 24 + pauseW + 12, ctrlY, w - 48 - pauseW - 12, 60, 16, true, true, 'rgba(255,255,255,0.2)', 1.5);
         ctx.fillStyle = '#ffffff';
-        ctx.fillText('终止', 24 + pauseW + 12 + (w - 48 - pauseW - 12)/2, ctrlY + 36);
+        ctx.fillText('终止', 24 + pauseW + 12 + (w - 48 - pauseW - 12) / 2, ctrlY + 36);
         hitboxes.push({ x: 24 + pauseW + 12, y: ctrlY, w: w - 48 - pauseW - 12, h: 60, action: 'stop' });
       }
     }
@@ -543,14 +571,8 @@ export default function App() {
       };
     }
 
-    const fieldMapping = {
-      work: 'workTime',
-      rest: 'restTime',
-      rounds: 'totalRounds'
-    };
-
     function handleDown(e) {
-      unlockAudio();
+      unlockAudio();   // iOS 关键：任何触摸都激活音频通道
       const pos = getCoords(e);
       hitboxes.forEach(box => {
         if (pos.x >= box.x && pos.x <= box.x + box.w && pos.y >= box.y && pos.y <= box.y + box.h) {
@@ -558,7 +580,7 @@ export default function App() {
           if (box.action.startsWith('dec_') || box.action.startsWith('inc_')) {
             const targetField = box.action.split('_')[1];
             const stepSign = box.action.startsWith('dec_') ? -1 : 1;
-            
+
             if (targetField === 'work') {
               config.workTime = Math.max(5, config.workTime + stepSign * 5);
             } else if (targetField === 'rest') {
@@ -567,18 +589,13 @@ export default function App() {
               config.totalRounds = Math.max(1, config.totalRounds + stepSign);
             }
             saveConfig();
-            
-            const resolvedKey = fieldMapping[targetField];
-            if (resolvedKey && config[resolvedKey] !== undefined) {
-              speak(config[resolvedKey].toString());
-            }
-          } else if (box.action === 'toggle_voice') {
-            if (filteredVoices.length > 0) {
-              selectedVoiceIndex = (selectedVoiceIndex + 1) % filteredVoices.length;
-              speak("test");
-            }
+            cue('tick');   // 调整时给个轻反馈音
+          } else if (box.action === 'toggle_sound') {
+            soundEnabled = !soundEnabled;
+            localStorage.setItem('plank_sound', soundEnabled ? 'on' : 'off');
+            if (soundEnabled) cue('ready');
           } else if (box.action === 'test_voice') {
-            speak("test");
+            cue('test');
           } else if (box.action === 'start') {
             startTraining();
           } else if (box.action === 'pause') {
