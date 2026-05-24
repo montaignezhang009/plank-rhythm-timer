@@ -87,8 +87,6 @@ export default function App() {
     }
 
     // --- 2. 语音选择及多语种适配 ---
-    let diag = { total: 0, zhList: '?', hk: '?', en: '?', spoke: 0 };
-
     function initVoices() {
       if (typeof window !== 'undefined' && window.speechSynthesis) {
         const allVoices = window.speechSynthesis.getVoices();
@@ -124,14 +122,6 @@ export default function App() {
           { voice: hkVoice || null, label: hkVoice ? "中文女声" : "中文女声 (缺省)", type: 'zh' },
           { voice: enVoice || null, label: enVoice ? "英语女声" : "英语女声 (缺省)", type: 'en' }
         ];
-
-        // 诊断信息收集
-        diag.total = allVoices.length;
-        diag.zhList = allVoices.filter(v => v.lang.toLowerCase().includes('zh')).map(v => v.lang).join(',') || '无';
-        diag.hk = hkVoice ? hkVoice.name + '/' + hkVoice.lang : 'null';
-        diag.en = enVoice ? enVoice.name + '/' + enVoice.lang : 'null';
-      } else {
-        diag.total = -1; // speechSynthesis 不存在
       }
     }
     
@@ -166,7 +156,6 @@ export default function App() {
         utterance.pitch = 1;
         utterance.rate = activeOption.type === 'zh' ? 1.2 : 1.1;
         window.speechSynthesis.speak(utterance);
-        diag.spoke++;
       }
     }
 
@@ -398,17 +387,6 @@ export default function App() {
         ctx.fillStyle = '#64748b';
         ctx.font = 'bold 12px sans-serif';
         ctx.fillText('专注节奏 · 高效核心训练', w / 2, h * 0.11);
-
-        // === 诊断面板（排查完可删除）===
-        ctx.textAlign = 'center';
-        ctx.font = 'bold 11px monospace';
-        ctx.fillStyle = diag.total > 0 ? '#34d399' : '#f87171';
-        ctx.fillText(`语音数:${diag.total} | 已播:${diag.spoke}`, w / 2, h * 0.135);
-        ctx.fillStyle = '#94a3b8';
-        ctx.fillText(`zh: ${diag.zhList}`, w / 2, h * 0.152);
-        ctx.fillText(`HK: ${diag.hk}`, w / 2, h * 0.169);
-        ctx.fillText(`EN: ${diag.en}`, w / 2, h * 0.186);
-        // === 诊断面板结束 ===
 
         const controls = [
           { id: 'work', title: '🔥 单组支撑时长', val: config.workTime, unit: '秒', step: 5, color: '#f97316' },
