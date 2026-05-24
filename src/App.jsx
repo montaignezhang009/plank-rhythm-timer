@@ -1,3 +1,108 @@
+⏱️ 平板支撑计时器 - GitHub & Vercel 部署配置清单
+
+为了让您在本地开发或上传到 GitHub 仓库时最方便地复制，以下是剥离、整理好的标准 React 脚手架文件。
+
+📂 项目目录结构
+
+├── package.json
+├── vite.config.js
+├── index.html
+└── src
+    ├── main.jsx
+    └── App.jsx
+
+
+1. ⚙️ package.json
+
+项目依赖声明，放在根目录下。
+
+{
+  "name": "plank-rhythm-timer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.0.8"
+  }
+}
+
+
+2. 🛠️ vite.config.js
+
+Vite 配置文件，放在根目录下。
+
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+})
+
+
+3. 🌐 index.html
+
+网页主入口，放在根目录下。
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22[http://www.w3.org/2000/svg%22](http://www.w3.org/2000/svg%22) viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⏱️</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>平板支撑节奏计时器</title>
+    <!-- 引入 Tailwind CSS CDN -->
+    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+    <style>
+      body, html {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background-color: #050811;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+    </style>
+  </head>
+  <body class="flex items-center justify-center">
+    <div id="root" class="w-full h-full max-w-md bg-[#090d16] shadow-2xl overflow-hidden flex flex-col"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+
+4. 🚀 src/main.jsx (最标准的 10 行挂载代码)
+
+新建在 src/ 目录下。彻底移除了不存在的 index.css，防止编译报错。
+
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)
+
+
+5. 🎨 src/App.jsx (计时器核心逻辑与绘制)
+
+新建在 src/ 目录下。存放计时器完整的物理引擎、Canvas 绘制与多语种播报逻辑。
+
 import React, { useEffect, useRef } from 'react';
 
 export default function App() {
@@ -17,19 +122,19 @@ export default function App() {
     };
 
     let state = {
-      status: 'config', // 'config' | 'training'
-      subStatus: 'prepare', // 'prepare' | 'work' | 'rest'
+      status: 'config', 
+      subStatus: 'prepare', 
       currentRound: 1,
       timeLeft: 5,
       isPaused: false
     };
 
-    // UI 颜色过度平滑阻尼器
+    // UI 颜色过渡平滑阻尼器
     let backgroundColors = {
       config: { r: 9, g: 13, b: 22 },
-      prepare: { r: 217, g: 119, b: 6 }, // 暖橙准备
-      work: { r: 5, g: 150, b: 105 },    // 核心翠绿
-      rest: { r: 37, g: 99, b: 235 }     // 休息深蓝
+      prepare: { r: 217, g: 119, b: 6 }, 
+      work: { r: 5, g: 150, b: 105 },    
+      rest: { r: 37, g: 99, b: 235 }     
     };
     let currentBg = { r: 9, g: 13, b: 22 };
 
@@ -73,7 +178,7 @@ export default function App() {
       }
     };
 
-    // 背景浮动微尘粒子
+    // 背景浮动粒子
     let particles = [];
     for (let i = 0; i < 25; i++) {
       particles.push({
@@ -406,7 +511,6 @@ export default function App() {
           hitboxes.push({ x: w - 44 - btnSize, y: btnY, w: btnSize, h: btnSize, action: 'inc_' + ctrl.id });
         });
 
-        // 粤语/英语选择栏
         const voiceY = cardStartY + 3 * cardGap - 10;
         ctx.fillStyle = '#0f172a';
         drawRoundedRect(ctx, 24, voiceY, w - 48, h * 0.08, 14, true, true, '#1e293b', 1.5);
@@ -569,7 +673,6 @@ export default function App() {
       draw();
     }
 
-    // 事件绑定与适配
     canvas.addEventListener('mousedown', handleDown);
     const touchStartHandler = (e) => {
       e.preventDefault();
@@ -581,7 +684,6 @@ export default function App() {
     window.addEventListener('touchend', handleUp);
     window.addEventListener('resize', resize);
 
-    // 绘制循环
     let animationFrameId;
     function frame() {
       draw();
@@ -591,7 +693,6 @@ export default function App() {
     resize();
     frame();
 
-    // 清理钩子
     return () => {
       canvas.removeEventListener('mousedown', handleDown);
       canvas.removeEventListener('touchstart', touchStartHandler);
